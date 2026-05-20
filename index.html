@@ -1433,11 +1433,71 @@ function unlockNextGame(genreId, gameIdx){
   renderAdminGenreTab(genreId);
 }
 
+// ── ADMIN WRITE QUEUE — same debounce pattern as player ──
+let _adminWriteTimer = null;
+
 function adminToggleSong(genreId, title){
-  const set=getPlayedSet(genreId);
+  // Instant update to cache
+  const set = getPlayedSet(genreId);
   if(set.has(title)) set.delete(title); else set.add(title);
-  setPlayedSet(genreId,set);
+  _cache.played[genreId] = [...set];
+
+  // Re-render immediately from cache
   renderAdminGenreTab(genreId);
+
+  // Debounce write — batch rapid taps into one write
+  showAdminSaveIndicator('pending');
+  clearTimeout(_adminWriteTimer);
+  _adminWriteTimer = setTimeout(async ()=>{
+    showAdminSaveIndicator('saving');
+    try {
+      await sheetPost('savePlayed', { played: _cache.played });
+      showAdminSaveIndicator('saved');
+    } catch(e) {
+      setTimeout(async ()=>{
+        try {
+          await sheetPost('savePlayed', { played: _cache.played });
+          showAdminSaveIndicator('saved');
+        } catch(e2){
+          showAdminSaveIndicator('error');
+        }
+      }, 2000);
+    }
+  }, 600);
+}
+
+function showAdminSaveIndicator(state){
+  let el = document.getElementById('adminSaveIndicator');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'adminSaveIndicator';
+    el.style.cssText = `position:fixed;bottom:20px;right:16px;z-index:300;padding:6px 13px;border-radius:20px;font-family:'Space Mono',monospace;font-size:.65rem;letter-spacing:1px;transition:opacity .4s;pointer-events:none;`;
+    document.body.appendChild(el);
+  }
+  if(state==='pending'){
+    el.style.cssText += 'opacity:1;background:rgba(255,214,0,.12);border:1px solid rgba(255,214,0,.3);color:#FFD600;';
+    el.textContent='● queuing...';
+  } else if(state==='saving'){
+    el.style.opacity='1';
+    el.style.background='rgba(255,214,0,.15)';
+    el.style.border='1px solid rgba(255,214,0,.4)';
+    el.style.color='#FFD600';
+    el.textContent='● saving...';
+  } else if(state==='saved'){
+    el.style.opacity='1';
+    el.style.background='rgba(29,185,84,.15)';
+    el.style.border='1px solid rgba(29,185,84,.4)';
+    el.style.color='#1DB954';
+    el.textContent='✓ saved';
+    setTimeout(()=>{ el.style.opacity='0'; }, 2000);
+  } else if(state==='error'){
+    el.style.opacity='1';
+    el.style.background='rgba(255,68,68,.15)';
+    el.style.border='1px solid rgba(255,68,68,.4)';
+    el.style.color='#ff9090';
+    el.textContent='⚠ retry failed';
+    setTimeout(()=>{ el.style.opacity='0'; }, 4000);
+  }
 }
 
 function deletePlayer(btn){
@@ -1539,30 +1599,34 @@ function unbanPlayer(btn){
 function openModal(el){
   const playerName = el.dataset.name;
   const genreId = el.dataset.genre;
-  const players=loadPlayers();
-  const player=players.find(p=>p.name===playerName);
-  const g=GENRES.find(x=>x.id===genreId);
+  const players = loadPlayers();
+  const player = players.find(p=>p.name===playerName);
+  const g = GENRES.find(x=>x.id===genreId);
   if(!player||!g) return;
 
-  const card=player.cards[genreId];
-  const playedSet=getPlayedSet(genreId);
-  const marked=card.filter(c=>c.marked).length;
-  const validCount=card.filter(c=>c.marked&&playedSet.has(c.song)).length;
-  const suspiciousCount=card.filter(c=>c.marked&&!playedSet.has(c.song)).length;
-  const hasBingo=checkBingo(card);
+  const card = player.cards[genreId];
+  const playedSet = getPlayedSet(genreId);
+  const marked = card.filter(c=>c.marked).length;
+  const lines = countLines(card);
+  const validCount = card.filter(c=>c.marked&&playedSet.has(c.song)).length;
+  const suspiciousCount = card.filter(c=>c.marked&&!playedSet.has(c.song)).length;
+  const hasBingo = checkBingo(card);
 
-  document.getElementById('modalTitle').textContent=playerName+(hasBingo?' 🏆':'');
+  // Clear win verdict for title
+  document.getElementById('modalTitle').textContent = playerName;
+
   document.getElementById('modalStats').innerHTML=`
     <div class="pill pill-green">${g.emoji} ${g.label}</div>
     <div class="pill pill-green">${marked}/25 marked</div>
+    <div class="pill" style="background:rgba(255,255,255,.07);color:var(--muted);border:1px solid var(--border);">${lines} line${lines!==1?'s':''}</div>
     <div class="pill pill-green">✓ ${validCount} confirmed</div>
-    ${suspiciousCount>0?`<div class="pill pill-red">⚠ ${suspiciousCount} unplayed</div>`:''}
-    ${hasBingo?'<div class="pill pill-yellow">🎉 BINGO!</div>':''}
+    ${suspiciousCount>0?`<div class="pill pill-red">⚠ ${suspiciousCount} not played</div>`:''}
+    ${hasBingo?'<div class="pill pill-yellow">🏆 BINGO!</div>':''}
   `;
 
-  const grid=document.getElementById('modalGrid');
-  grid.innerHTML=card.map(cell=>{
-    const isPlayed=playedSet.has(cell.song);
+  const grid = document.getElementById('modalGrid');
+  grid.innerHTML = card.map(cell=>{
+    const isPlayed = playedSet.has(cell.song);
     let cls='';
     if(cell.marked&&isPlayed) cls='valid';
     else if(cell.marked&&!isPlayed) cls='suspicious';
@@ -1570,15 +1634,26 @@ function openModal(el){
     return `<div class="modal-cell${cls?' '+cls:''}">${cell.song}</div>`;
   }).join('');
 
-  const verdict=document.getElementById('modalVerdict');
-  if(playedSet.size===0){
-    verdict.style.display='none';
-  } else if(hasBingo&&suspiciousCount>0){
-    verdict.style.cssText='display:block;background:rgba(255,68,68,.12);border:1px solid rgba(255,68,68,.28);color:#ffaaaa;';
-    verdict.textContent=`⚠️ ${playerName} claimed BINGO but has ${suspiciousCount} marked song${suspiciousCount>1?'s':''} you haven't played yet.`;
-  } else if(hasBingo&&suspiciousCount===0){
-    verdict.style.cssText='display:block;background:rgba(29,185,84,.12);border:1px solid rgba(29,185,84,.28);color:var(--green);';
-    verdict.textContent=`✅ ${playerName}'s BINGO checks out — all marked songs confirmed played!`;
+  // ── BIG VERDICT BANNER ──
+  const verdict = document.getElementById('modalVerdict');
+  if(hasBingo && suspiciousCount===0 && playedSet.size>0){
+    verdict.style.cssText='display:block;background:linear-gradient(135deg,rgba(29,185,84,.2),rgba(29,185,84,.08));border:2px solid rgba(29,185,84,.5);color:var(--green);border-radius:12px;padding:16px;text-align:center;';
+    verdict.innerHTML=`
+      <div style="font-size:2rem;margin-bottom:6px;">🏆</div>
+      <div style="font-family:'Bebas Neue',sans-serif;font-size:1.8rem;letter-spacing:2px;">LEGITIMATE BINGO!</div>
+      <div style="font-size:.82rem;opacity:.8;margin-top:4px;">All ${validCount} marked songs confirmed played ✓</div>`;
+  } else if(hasBingo && suspiciousCount>0){
+    verdict.style.cssText='display:block;background:linear-gradient(135deg,rgba(255,68,68,.18),rgba(255,68,68,.06));border:2px solid rgba(255,68,68,.45);color:#ff9090;border-radius:12px;padding:16px;text-align:center;';
+    verdict.innerHTML=`
+      <div style="font-size:2rem;margin-bottom:6px;">⚠️</div>
+      <div style="font-family:'Bebas Neue',sans-serif;font-size:1.8rem;letter-spacing:2px;">SUSPICIOUS BINGO!</div>
+      <div style="font-size:.82rem;opacity:.85;margin-top:4px;">${suspiciousCount} marked song${suspiciousCount>1?'s':''} haven't been played yet</div>`;
+  } else if(!hasBingo && lines===1){
+    verdict.style.cssText='display:block;background:rgba(255,214,0,.08);border:1px solid rgba(255,214,0,.25);color:var(--yellow);border-radius:12px;padding:12px;text-align:center;';
+    verdict.innerHTML=`<div style="font-family:'Bebas Neue',sans-serif;font-size:1.4rem;letter-spacing:2px;">🔥 ONE LINE — Getting close!</div>`;
+  } else if(!hasBingo){
+    verdict.style.cssText='display:block;background:rgba(255,255,255,.04);border:1px solid var(--border);color:var(--muted);border-radius:12px;padding:12px;text-align:center;';
+    verdict.innerHTML=`<div style="font-family:'Space Mono',monospace;font-size:.8rem;">Not there yet — ${lines} of 2 lines complete</div>`;
   } else {
     verdict.style.display='none';
   }
