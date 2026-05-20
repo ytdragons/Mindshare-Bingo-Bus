@@ -1045,45 +1045,114 @@ function switchPlayerTab(genreId){
   document.querySelectorAll('#playerTabContents .tab-content').forEach(t=>t.classList.toggle('active',t.id==='player-tab-'+genreId));
 }
 
+// ── WRITE QUEUE — taps update instantly, writes are debounced and never block UI ──
+let _writeTimer = null;
+let _pendingWrite = false;
+
 function playerToggle(genreId, idx){
-  currentPlayer.cards[genreId][idx].marked=!currentPlayer.cards[genreId][idx].marked;
+  // Instant toggle — no blocking, no await
+  currentPlayer.cards[genreId][idx].marked = !currentPlayer.cards[genreId][idx].marked;
+  const card = currentPlayer.cards[genreId];
 
-  // Persist
-  const players=loadPlayers();
-  const pi=players.findIndex(p=>p.name===currentPlayer.name);
-  if(pi>=0){ players[pi].cards=currentPlayer.cards; savePlayers(players); }
+  // Update cache immediately so poll never reverts it
+  const players = _cache.players;
+  const pi = players.findIndex(p=>p.name===currentPlayer.name);
+  if(pi>=0) players[pi].cards = currentPlayer.cards;
 
-  // Re-render just this grid
-  const card=currentPlayer.cards[genreId];
-  const grid=document.getElementById('pgrid-'+genreId);
+  // Update UI instantly
+  const grid = document.getElementById('pgrid-'+genreId);
   if(grid){
     grid.querySelectorAll('.bingo-cell').forEach((cell,i)=>{
-      cell.classList.toggle('marked',card[i].marked);
+      cell.classList.toggle('marked', card[i].marked);
     });
   }
-  const lines=countLines(card);
-  const prog=document.getElementById('pprog-'+genreId);
+  const lines = countLines(card);
+  const prog = document.getElementById('pprog-'+genreId);
   if(prog){
     prog.textContent = lines===0 ? 'Need 2 lines to win'
       : lines===1 ? '🔥 1 line down — need 1 more!'
       : '';
   }
 
-  // First line completed — show fullscreen alert
+  // Debounce the Sheets write — waits 800ms after the LAST tap before writing
+  // This means rapid taps all get batched into one single write
+  _pendingWrite = true;
+  showSaveIndicator('pending');
+  clearTimeout(_writeTimer);
+  _writeTimer = setTimeout(()=>flushPlayerWrite(), 800);
+
+  // Check milestones immediately
   if(lines===1 && !alreadyShowedOneLine(genreId)){
     markShowedOneLine(genreId);
-    const g=GENRES.find(x=>x.id===genreId);
-    showOneLineOverlay(g);
+    showOneLineOverlay(GENRES.find(x=>x.id===genreId));
   }
-
   if(checkBingo(card) && !alreadyCelebrated(genreId)){
     markCelebrated(genreId);
     shootConfetti(50);
-    // Refresh tab to show banner
-    const tabDiv=document.getElementById('player-tab-'+genreId);
-    if(tabDiv) tabDiv.innerHTML=buildPlayerGenreHTML(GENRES.find(g=>g.id===genreId));
+    const tabDiv = document.getElementById('player-tab-'+genreId);
+    if(tabDiv) tabDiv.innerHTML = buildPlayerGenreHTML(GENRES.find(g=>g.id===genreId));
   }
 }
+
+async function flushPlayerWrite(){
+  if(!_pendingWrite) return;
+  _pendingWrite = false;
+  showSaveIndicator('saving');
+  try {
+    await sheetPost('savePlayers', { players: _cache.players });
+    showSaveIndicator('saved');
+  } catch(e) {
+    // Retry once after 2s
+    setTimeout(async()=>{
+      try {
+        await sheetPost('savePlayers', { players: _cache.players });
+        showSaveIndicator('saved');
+      } catch(e2){
+        showSaveIndicator('error');
+        // Re-queue so it tries again on next tap
+        _pendingWrite = true;
+      }
+    }, 2000);
+  }
+}
+
+function showSaveIndicator(state){
+  let el = document.getElementById('saveIndicator');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'saveIndicator';
+    el.style.cssText = `position:fixed;bottom:20px;right:16px;z-index:300;padding:6px 13px;border-radius:20px;font-family:'Space Mono',monospace;font-size:.65rem;letter-spacing:1px;transition:opacity .4s;pointer-events:none;`;
+    document.body.appendChild(el);
+  }
+  if(state==='pending'){
+    el.style.opacity='1';
+    el.style.background='rgba(255,214,0,.12)';
+    el.style.border='1px solid rgba(255,214,0,.3)';
+    el.style.color='#FFD600';
+    el.textContent='● queuing...';
+  } else if(state==='saving'){
+    el.style.opacity='1';
+    el.style.background='rgba(255,214,0,.15)';
+    el.style.border='1px solid rgba(255,214,0,.4)';
+    el.style.color='#FFD600';
+    el.textContent='● saving...';
+  } else if(state==='saved'){
+    el.style.opacity='1';
+    el.style.background='rgba(29,185,84,.15)';
+    el.style.border='1px solid rgba(29,185,84,.4)';
+    el.style.color='#1DB954';
+    el.textContent='✓ saved';
+    setTimeout(()=>{ el.style.opacity='0'; }, 2000);
+  } else if(state==='error'){
+    el.style.opacity='1';
+    el.style.background='rgba(255,68,68,.15)';
+    el.style.border='1px solid rgba(255,68,68,.4)';
+    el.style.color='#ff9090';
+    el.textContent='⚠ tap again to retry';
+    setTimeout(()=>{ el.style.opacity='0'; }, 4000);
+  }
+}
+
 
 // ══════════════════════════════════════════════
 //  GAME HYPE SCREEN
@@ -1164,11 +1233,14 @@ function startPlayerPolling(){
   if(playerPoll) clearInterval(playerPoll);
   _lastUnlockedUpTo = getUnlockedUpTo();
   playerPoll=setInterval(async ()=>{
+    // Pull fresh data from Sheets
     await loadAllFromSheets();
 
-    // Sync current player's card state
-    const p=loadPlayers().find(pl=>pl.name===currentPlayer.name);
-    if(p) currentPlayer=p;
+    // NEVER overwrite currentPlayer's cards from Sheets — local is always source of truth
+    // Only sync game state (unlocks) and other players' data
+    // Re-inject our own card data back into cache so it doesn't get lost
+    const pi = _cache.players.findIndex(p=>p.name===currentPlayer.name);
+    if(pi>=0) _cache.players[pi].cards = currentPlayer.cards;
 
     // Check if a new game was unlocked by admin
     const newUnlocked = getUnlockedUpTo();
@@ -1179,7 +1251,7 @@ function startPlayerPolling(){
       switchPlayerTab(newGenre.id);
       showGameHypeScreen(newGenre, newUnlocked+1);
     }
-  },4000);
+  },6000);
 }
 
 // ══════════════════════════════════════════════
