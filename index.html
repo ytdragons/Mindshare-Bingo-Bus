@@ -193,13 +193,13 @@ body::before {
 .bingo-cell {
   aspect-ratio:1; display:flex; align-items:center; justify-content:center;
   border-radius:10px; border:2px solid rgba(255,255,255,.08);
-  background:rgba(255,255,255,.05); font-size:.58rem; font-weight:700;
-  text-align:center; cursor:pointer; transition:all .22s; padding:5px; line-height:1.3;
+  background:rgba(255,255,255,.05); font-size:clamp(.65rem, 2.2vw, .82rem); font-weight:700;
+  text-align:center; cursor:pointer; transition:all .22s; padding:5px; line-height:1.25;
   position:relative; overflow:hidden;
 }
 .bingo-cell:hover { border-color:var(--green); transform:scale(1.04); }
 .bingo-cell.marked { background:var(--green); color:var(--dark); border-color:var(--green); transform:scale(1.04); }
-.bingo-cell.marked::after { content:'✓'; position:absolute; top:2px; right:4px; font-size:.5rem; opacity:.6; }
+.bingo-cell.marked::after { content:'✓'; position:absolute; top:2px; right:4px; font-size:.55rem; opacity:.6; }
 
 /* Admin modal cells */
 .bingo-cell.valid { background:var(--green); color:var(--dark); border-color:var(--green); }
@@ -301,7 +301,12 @@ body::before {
 /* ── MISC ── */
 .footer { text-align:center; padding:30px 20px; color:rgba(255,255,255,.15); font-size:.72rem; font-family:'Space Mono',monospace; letter-spacing:1px; }
 .section-label { font-family:'Space Mono',monospace; font-size:.7rem; color:var(--muted); letter-spacing:2px; text-transform:uppercase; margin-bottom:10px; }
-@media(max-width:480px) { .bingo-cell{font-size:.5rem;padding:4px;} .bingo-grid,.bingo-header-row{gap:4px;} }
+@media(max-width:480px) {
+  .bingo-cell { font-size:clamp(.7rem, 3.2vw, .85rem); padding:3px; line-height:1.2; }
+  .bingo-grid, .bingo-header-row { gap:4px; }
+  .bingo-wrap { max-width:100%; }
+  .container { padding:12px 10px 40px; }
+}
 </style>
 </head>
 <body>
@@ -1336,7 +1341,7 @@ function renderAdminGenreTab(genreId){
   // Songs list HTML
   const songsHTML=g.songs.map(s=>{
     const played=playedSet.has(s.title);
-    return `<div class="song-item${played?' played':''}" onclick="adminToggleSong('${genreId}','${s.title.replace(/'/g,"\\'")}')">
+    return `<div class="song-item${played?' played':''}" data-genre="${genreId}" data-title="${s.title.replace(/"/g,'&quot;')}" onclick="adminToggleSong(this)">
       <div class="song-item-dot"></div>
       <div style="flex:1;">
         <div class="song-item-title">${s.title}</div>
@@ -1436,7 +1441,9 @@ function unlockNextGame(genreId, gameIdx){
 // ── ADMIN WRITE QUEUE — same debounce pattern as player ──
 let _adminWriteTimer = null;
 
-function adminToggleSong(genreId, title){
+function adminToggleSong(el){
+  const genreId = el.dataset.genre;
+  const title = el.dataset.title;
   // Instant update to cache
   const set = getPlayedSet(genreId);
   if(set.has(title)) set.delete(title); else set.add(title);
