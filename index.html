@@ -596,6 +596,7 @@ const GENRES = [
   {
     id:'country', label:'Country', emoji:'🤠',
     color:'#FF6B2B',
+    useArtist: true,
     playlist:'https://open.spotify.com/playlist/38OY3Gr8rPvxWGrGQxQmCY',
     songs:[
       {title:"Last Night",artist:"Morgan Wallen"},
@@ -660,6 +661,7 @@ const GENRES = [
   {
     id:'indie', label:'Indie', emoji:'🎸',
     color:'#38BDF8',
+    useArtist: true,
     playlist:'https://open.spotify.com/playlist/1mQlnFAWkWaMtAEDYnjnyx',
     songs:[
       {title:"Do I Wanna Know?",artist:"Arctic Monkeys"},
@@ -923,7 +925,10 @@ async function joinGame(){
     // Generate one card per genre for this player
     const cards={};
     GENRES.forEach(g=>{
-      cards[g.id]=shuffle(g.songs).slice(0,25).map(s=>({song:s.title,marked:false}));
+      cards[g.id]=shuffle(g.songs).slice(0,25).map(s=>({
+        song: g.useArtist ? s.artist : s.title,
+        marked:false
+      }));
     });
     player={name,cards,joinedAt:Date.now()};
     players.push(player);
@@ -1338,14 +1343,15 @@ function renderAdminGenreTab(genreId){
   const isUnlocked=gameIdx<=unlockedUpTo;
   if(!tab) return;
 
-  // Songs list HTML
+  // Songs list HTML — use artist name as the key for country/indie
   const songsHTML=g.songs.map(s=>{
-    const played=playedSet.has(s.title);
-    return `<div class="song-item${played?' played':''}" data-genre="${genreId}" data-title="${s.title.replace(/"/g,'&quot;')}" onclick="adminToggleSong(this)">
+    const key = g.useArtist ? s.artist : s.title;
+    const played=playedSet.has(key);
+    return `<div class="song-item${played?' played':''}" data-genre="${genreId}" data-title="${key.replace(/"/g,'&quot;')}" onclick="adminToggleSong(this)">
       <div class="song-item-dot"></div>
       <div style="flex:1;">
-        <div class="song-item-title">${s.title}</div>
-        <div class="song-item-artist">${s.artist}</div>
+        <div class="song-item-title">${g.useArtist ? s.artist : s.title}</div>
+        <div class="song-item-artist">${g.useArtist ? s.title : s.artist}</div>
       </div>
       <div class="song-item-badge">${played?'✓':'tap'}</div>
     </div>`;
